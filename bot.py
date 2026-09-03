@@ -16,8 +16,9 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 
+from aiohttp import web
 from ai_service import analyze_food_image
-from config import BOT_TOKEN, validate_config
+from config import BOT_TOKEN, PORT, validate_config
 
 # Loglarni sozlash
 logging.basicConfig(
@@ -28,6 +29,26 @@ logger = logging.getLogger(__name__)
 
 # Dispatcher va Bot obyekti
 dp = Dispatcher()
+
+async def handle_health_check(request):
+    """Bulutli serverlar (Render, Koyeb va h.k.) uchun 200 OK qaytaruvchi health check"""
+    return web.json_response({
+        "status": "ok",
+        "service": "AI Calorie Telegram Bot",
+        "message": "Bot muvaffaqiyatli ishlamoqda!"
+    })
+
+async def start_web_server():
+    """Health-check veb-serverini ishga tushirish (404 xatoliklarini oldini oladi)"""
+    app = web.Application()
+    app.router.add_get("/", handle_health_check)
+    app.router.add_get("/health", handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"🌐 Health-check veb-server {PORT}-portda ishga tushirildi.")
+    return runner
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -77,7 +98,7 @@ async def cmd_help(event: types.Message | types.CallbackQuery):
         await event.answer(text, parse_mode=ParseMode.HTML)
 
 
-@dp.message(F.photo)
+@dp.message(F.photo | (F.document & F.document.mime_type.startswith("image/")))
 async def handle_photo(message: types.Message, bot: Bot):
     """
     Foydalanuvchi yuborgan rasmni qabul qilib, AI orqali kaloriya hisoblash.
@@ -89,21 +110,29 @@ async def handle_photo(message: types.Message, bot: Bot):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
-        # Eng yuqori sifatli rasmni olish
-        photo = message.photo[-1]
-        
-        # Rasmni xotiraga (BytesIO) yuklab olish
+        # Eng yuqori sifatli rasmni yoki hujjatni olish
         photo_bytes_io = io.BytesIO()
-        await bot.download(photo, destination=photo_bytes_io)
+        if message.photo:
+            photo = message.photo[-1]
+            await bot.download(photo, destination=photo_bytes_io)
+        elif message.document:
+            await bot.download(message.document, destination=photo_bytes_io)
+        else:
+            await status_msg.edit_text("❌ Rasm topilmadi. Iltimos, qaytadan yuboring.", parse_mode=ParseMode.HTML)
+            return
+
         photo_bytes = photo_bytes_io.getvalue()
 
         # AI servisiga yuborish va natija olish
         result_text = await analyze_food_image(photo_bytes)
 
-        # Holat xabarini o'chirish yoki natija bilan yangilash
-        await status_msg.delete()
+        # Holat xabarini o'chirish
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
         
-        # Natijani yuborish (Markdown formatida)
+        # Natijani yuborish (Markdown yoki HTML yoki oddiy matn)
         try:
             await message.reply(result_text, parse_mode=ParseMode.MARKDOWN)
         except Exception:
@@ -112,10 +141,13 @@ async def handle_photo(message: types.Message, bot: Bot):
 
     except Exception as e:
         logger.error(f"Rasm qayta ishlashda xatolik: {e}")
-        await status_msg.edit_text(
-            "❌ Rasmni qayta ishlashda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await status_msg.edit_text(
+                "❌ Rasmni qayta ishlashda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await message.reply("❌ Rasmni qayta ishlashda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.")
 
 
 @dp.message(F.text)
@@ -152,12 +184,26 @@ async def main():
     # Menyu buyruqlarini sozlash
     await set_main_menu(bot)
     
+    # Eski webhook va ziddiyatlarni tozalash (404/Conflict xatolarining oldini oladi)
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    web_runner = None
+    try:
+        web_runner = await start_web_server()
+    except Exception as e:
+        logger.warning(f"Veb-server ogohlantirishi (Polling davom etadi): {e}")
+
     print("🚀 AI Calorie Telegram Bot muvaffaqiyatli ishga tushdi!")
     print("Bot xabarlarni kutmoqda...")
     
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if web_runner:
+            try:
+                await web_runner.cleanup()
+            except Exception:
+                pass
         await bot.session.close()
 
 

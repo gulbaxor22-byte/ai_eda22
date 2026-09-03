@@ -55,28 +55,32 @@ pip install -r requirements.txt
 
 ### 4. Botni ishga tushirish
 
-Botni ishga tushirish uchun:
+Botingizni bir necha usulda ishga tushirishingiz mumkin:
 
+#### 1-usul: Oddiy terminal orqali
 ```bash
 python bot.py
 ```
 
-Agar hammasi to'g'ri sozlangan bo'lsa:
-```
-🚀 AI Calorie Telegram Bot muvaffaqiyatli ishga tushdi!
-Bot xabarlarni kutmoqda...
-```
-xabari chiqadi va botingiz Telegramda ishlashga tayyor bo'ladi! 🎉
+#### 2-usul: 1 marta bosish orqali (`start_bot.bat`)
+`start_bot.bat` fayliga 2 marta bosing. Bot alohida oynada ochiladi va avtomatik qayta ishga tushish (auto-restart) xususiyatiga ega bo'ladi.
+
+#### 3-usul: Orqa fonda oynasiz ishga tushirish (`run_background.vbs`)
+`run_background.vbs` faylini ishga tushiring. Bot fonda (yashirin) ishlayveradi va siz Antigravity yoki boshqa oynalarni bemalol yopishingiz mumkin!
+Botni to'xtatish uchun esa `stop_bot.bat` faylini bosish kifoya.
 
 ---
 
 ## 📁 Loyiha Strukturasi
 ```
 aieda/
-├── bot.py             # Asosiy Telegram bot kodi (aiogram 3)
-├── ai_service.py      # Gemini AI bilan rasm tahlili va kaloriya hisobi
+├── bot.py             # Asosiy Telegram bot kodi (aiogram 3 + aiohttp health check)
+├── ai_service.py      # OpenAI & Gemini Vision bilan rasm tahlili
 ├── config.py          # Sozlamalar va .env fayli tekshiruvi
 ├── requirements.txt   # Kerakli Python kutubxonalari
+├── start_bot.bat      # Botni alohida oynada ishga tushirish (auto-restart bilan)
+├── run_background.vbs # Botni orqa fonda (yashirin) ishga tushirish
+├── stop_bot.bat       # Ishlayotgan botni to'xtatish
 ├── .env               # API kalitlar fayli
 ├── .env.example       # Namunaviy parametrlar
 └── README.md          # Qo'llanma
