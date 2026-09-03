@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import aiohttp
+from PIL import Image
 from config import GEMINI_API_KEY, OPENAI_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -35,12 +36,25 @@ Muhim qoidalar:
 3. Hisob-kitoblar vizual ko'rinishga asoslangan taxminiy o'rtacha qiymat ekanligini unutmang.
 """
 
+def prepare_image(image_bytes: bytes) -> bytes:
+    """Rasmni standart RGB JPEG formatiga o'tkazish va o'lchamini optimallashtirish"""
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img.thumbnail((1024, 1024))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return image_bytes
+
+
 async def analyze_food_with_openai(image_bytes: bytes) -> str:
     """OpenAI Vision (gpt-4o-mini / gpt-4o) orqali rasmni tahlil qilish"""
     from openai import AsyncOpenAI
     
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    opt_bytes = prepare_image(image_bytes)
+    base64_image = base64.b64encode(opt_bytes).decode("utf-8")
     
     models_to_try = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4-turbo"]
     last_error = None
@@ -79,21 +93,21 @@ async def analyze_food_with_openai(image_bytes: bytes) -> str:
 
 
 async def analyze_food_with_gemini_rest(image_bytes: bytes) -> str:
-    """To'g'ridan-to'g'ri Google Gemini REST API orqali rasmni tahlil qilish (SDK va 404 xatolarini chetlab o'tadi)"""
-    base64_img = base64.b64encode(image_bytes).decode("utf-8")
+    """To'g'ridan-to'g'ri Google Gemini REST API orqali rasmni tahlil qilish"""
+    opt_bytes = prepare_image(image_bytes)
+    base64_img = base64.b64encode(opt_bytes).decode("utf-8")
     
     models = [
         "gemini-2.0-flash",
         "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
         "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-flash-002",
         "gemini-1.5-pro",
-        "gemini-1.5-pro-latest",
         "gemini-2.0-flash-exp"
     ]
     api_versions = ["v1beta", "v1"]
     
+    # 1. Payload with system prompt embedded
     payload = {
         "contents": [
             {
@@ -124,7 +138,7 @@ async def analyze_food_with_gemini_rest(image_bytes: bytes) -> str:
             for model_name in models:
                 url = f"https://generativelanguage.googleapis.com/{ver}/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
                 try:
-                    async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=40)) as resp:
+                    async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=35)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             candidates = data.get("candidates", [])
@@ -134,47 +148,12 @@ async def analyze_food_with_gemini_rest(image_bytes: bytes) -> str:
                                     return parts[0]["text"]
                         else:
                             body = await resp.text()
-                            last_err = f"HTTP {resp.status} ({model_name}, {ver}): {body[:150]}"
+                            last_err = f"HTTP {resp.status} ({model_name}, {ver})"
                 except Exception as e:
                     last_err = str(e)
                     continue
                     
     raise RuntimeError(last_err or "Gemini REST API dan javob olinmadi.")
-
-
-async def analyze_food_with_gemini_sdk(image_bytes: bytes) -> str:
-    """Google Gemini SDK orqali tahlil qilish"""
-    import google.generativeai as genai
-    from PIL import Image
-    
-    genai.configure(api_key=GEMINI_API_KEY)
-    image = Image.open(io.BytesIO(image_bytes))
-    
-    models_to_try = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash-exp"
-    ]
-    
-    last_error = None
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=SYSTEM_PROMPT
-            )
-            response = await model.generate_content_async(
-                [image, "Ushbu rasmdagi taomning kaloriyasini va ozuqaviy qiymatini tahlil qilib ber."]
-            )
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            last_error = e
-            continue
-            
-    raise last_error if last_error else RuntimeError("Gemini SDK modelidan javob olinmadi.")
 
 
 async def analyze_food_image(image_bytes: bytes) -> str:
@@ -184,7 +163,7 @@ async def analyze_food_image(image_bytes: bytes) -> str:
     """
     errors = []
     
-    # 1. OpenAI orqali urinib ko'rish
+    # 1. OpenAI orqali urinib ko'rish (eng aniq va barqaror)
     if OPENAI_API_KEY:
         try:
             return await analyze_food_with_openai(image_bytes)
@@ -193,24 +172,19 @@ async def analyze_food_image(image_bytes: bytes) -> str:
             logger.warning(err_msg)
             errors.append(err_msg)
             
-    # 2. Gemini REST API orqali urinib ko'rish (eng ishonchli va 404-free)
+    # 2. Gemini REST API orqali urinib ko'rish
     if GEMINI_API_KEY:
         try:
             return await analyze_food_with_gemini_rest(image_bytes)
         except Exception as e:
-            err_msg = f"Gemini REST xatoligi: {e}"
-            logger.warning(err_msg)
-            errors.append(err_msg)
-            
-        # 3. Gemini SDK orqali zahira urinish
-        try:
-            return await analyze_food_with_gemini_sdk(image_bytes)
-        except Exception as e:
-            err_msg = f"Gemini SDK xatoligi: {e}"
+            err_msg = f"Gemini xatoligi: {e}"
             logger.warning(err_msg)
             errors.append(err_msg)
             
     if not OPENAI_API_KEY and not GEMINI_API_KEY:
-        return "❌ AI API kaliti topilmadi (.env yoki Railway Variables da OPENAI_API_KEY yoki GEMINI_API_KEY ni tekshiring)."
+        return (
+            "❌ AI API kaliti topilmadi!\n\n"
+            "Iltimos, Railway Variables yoki .env faylida `OPENAI_API_KEY` yoki `GEMINI_API_KEY` mavjudligini tekshiring."
+        )
         
     return f"⚠️ Tahlil jarayonida xatolik yuz berdi:\n" + "\n".join(errors)
